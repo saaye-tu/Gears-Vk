@@ -255,6 +255,11 @@ public: // v== cgb::cg_element overrides which will be invoked by the framework 
 		cmdbfr.begin_recording();
 
 		auto inFlightIndex = cgb::context().main_window()->in_flight_index_for_frame();
+		auto& swapChainImage = cgb::context().main_window()->swap_chain_images()[inFlightIndex];
+
+		vk::ImageSubresourceRange subresourceRange = vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
+		vk::ImageMemoryBarrier imageBarrier = vk::ImageMemoryBarrier(vk::AccessFlags(), vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, mOffscreenImageViews[inFlightIndex]->image_handle(), subresourceRange);
+		cmdbfr.handle().pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eAllCommands, vk::DependencyFlags(), {}, {}, imageBarrier);
 
 		// Set the descriptors:
 		cmdbfr.handle().bindDescriptorSets(vk::PipelineBindPoint::eRayTracingNV, mPipeline->layout_handle(), 0, 
@@ -264,7 +269,7 @@ public: // v== cgb::cg_element overrides which will be invoked by the framework 
 
 		// Bind the pipeline
 		cmdbfr.handle().bindPipeline(vk::PipelineBindPoint::eRayTracingNV, mPipeline->handle());
-		
+
 		// Set the push constants:
 		auto pushConstantsForThisDrawCall = transformation_matrices { 
 			mQuakeCam.view_matrix()
@@ -279,8 +284,14 @@ public: // v== cgb::cg_element overrides which will be invoked by the framework 
 			cgb::context().main_window()->swap_chain_extent().width, cgb::context().main_window()->swap_chain_extent().height, 1,
 			cgb::context().dynamic_dispatch());
 
-		cgb::context().graphics_queue().handle().waitIdle();
-		
+
+		imageBarrier = vk::ImageMemoryBarrier(vk::AccessFlags(), vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, swapChainImage, subresourceRange);
+		cmdbfr.handle().pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eAllCommands, vk::DependencyFlags(), {}, {}, imageBarrier);
+
+		imageBarrier = vk::ImageMemoryBarrier(vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eTransferRead, vk::ImageLayout::eGeneral, vk::ImageLayout::eTransferSrcOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, mOffscreenImageViews[inFlightIndex]->image_handle(), subresourceRange);
+		cmdbfr.handle().pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eAllCommands, vk::DependencyFlags(), {}, {}, imageBarrier);
+
+
 		cmdbfr.set_image_barrier(
 			cgb::create_image_barrier(
 				cgb::context().main_window()->swap_chain_images()[inFlightIndex], 
@@ -304,7 +315,9 @@ public: // v== cgb::cg_element overrides which will be invoked by the framework 
 			)
 		);
 
-		cgb::context().graphics_queue().handle().waitIdle();
+		imageBarrier = vk::ImageMemoryBarrier(vk::AccessFlagBits::eTransferWrite, vk::AccessFlags(), vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::ePresentSrcKHR, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, swapChainImage, subresourceRange);
+		cmdbfr.handle().pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eAllCommands, vk::DependencyFlags(), {}, {}, imageBarrier);
+
 
 		//cmdbfr.end_render_pass();
 		cmdbfr.end_recording();
