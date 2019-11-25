@@ -116,8 +116,20 @@ namespace cgb
 			sCurrentComposition = pNewComposition;
 		}
 
-		/** Hidden access to the background input buffer, accessible to friends (namely @ref generic_glfw) */
-		virtual input_buffer& background_input_buffer() = 0;
+		/** Hidden access to the foreground input buffer for varying updates, accessible to friends (namely @ref generic_glfw) */
+		virtual input_buffer& foreground_input_buffer_varying() = 0;
+
+		/** Hidden access to the background input buffer for varying updates, accessible to friends (namely @ref generic_glfw) */
+		virtual input_buffer& background_input_buffer_varying() = 0;
+
+		/** Hidden access to the foreground input buffer for fixed updates, accessible to friends (namely @ref generic_glfw) */
+		virtual input_buffer& foreground_input_buffer_fixed() = 0;
+
+		/** Hidden access to the background input buffer for fixed updates, accessible to friends (namely @ref generic_glfw) */
+		virtual input_buffer& background_input_buffer_fixed() = 0;
+
+		/** Hidden access to the mutex that protects foreground input buffer for varying updates, accessible to friends (namely @ref generic_glfw) */
+		virtual std::mutex& input_mutex() = 0;
 
 	private:
 		/** The (single) currently active composition_interface */

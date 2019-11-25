@@ -91,9 +91,6 @@ namespace cgb
 		/** Returns if the cursor is hidden or not */
 		bool is_cursor_disabled() const;
 
-		/** Positions the cursor in the center of the screen */
-		void center_cursor_position();
-
 		/** Positions the cursor at the new coordinates */
 		void set_cursor_position(glm::dvec2 pNewPosition);
 
@@ -101,6 +98,9 @@ namespace cgb
 		 *	the previous frame. This means that key-down states are preserved.
 		 */
 		static void prepare_for_next_frame(input_buffer& pFrontBufferToBe, input_buffer& pBackBufferToBe, window* pWindow = nullptr);
+
+		/** After a buffer swap, there might still be some actions to be worked off. Do it! */
+		static void work_off_back_buffer_actions(input_buffer& pCurrentBackBuffer, window* pWindow);
 
 	private:
 		/** Keyboard button states */
@@ -123,9 +123,6 @@ namespace cgb
 
 		/** True if the cursor is disabled, false otherwise */
 		bool mCursorDisabled;
-
-		/** Has value if the cursor's position should be cetered */
-		std::optional<bool> mCenterCursorPosition;
 
 		/** Has value if the cursor's position should be changed */
 		std::optional<glm::dvec2> mSetCursorPosition;

@@ -3,7 +3,6 @@
 namespace cgb
 {
 	window* generic_glfw::sWindowInFocus = nullptr;
-	std::mutex generic_glfw::sInputMutex;
 	std::array<key_code, GLFW_KEY_LAST + 1> generic_glfw::sGlfwToKeyMapping{};
 	std::thread::id generic_glfw::sMainThreadId = std::this_thread::get_id();
 	std::mutex generic_glfw::sDispatchMutex;
@@ -274,12 +273,12 @@ namespace cgb
 		LOG_ERROR(fmt::format("GLFW-Error: hex[0x{0:x}] int[{0}] description[{1}]", error, description));
 	}
 
-	void generic_glfw::start_receiving_input_from_window(const window& _Window, input_buffer& _InputBuffer)
+	void generic_glfw::start_receiving_input_from_window(const window& _Window)
 	{
 		assert(are_we_on_the_main_thread());
 		glfwSetMouseButtonCallback(_Window.handle()->mHandle, glfw_mouse_button_callback);
-		//glfwSetCursorPosCallback(_Window.handle()->mHandle, glfw_cursor_pos_callback);
-		glfwSetScrollCallback(_Window.handle()->mHandle, glfw_scroll_callback);
+		glfwSetCursorPosCallback(_Window.handle()->mHandle, glfw_cursor_pos_callback);
+		//glfwSetScrollCallback(_Window.handle()->mHandle, glfw_scroll_callback);
 		glfwSetKeyCallback(_Window.handle()->mHandle, glfw_key_callback);
 	}
 
@@ -288,7 +287,7 @@ namespace cgb
 		assert(are_we_on_the_main_thread());
 		glfwSetMouseButtonCallback(_Window.handle()->mHandle, nullptr);
 		//glfwSetCursorPosCallback(_Window.handle()->mHandle, nullptr);
-		glfwSetScrollCallback(_Window.handle()->mHandle, nullptr);
+		//glfwSetScrollCallback(_Window.handle()->mHandle, nullptr);
 		glfwSetKeyCallback(_Window.handle()->mHandle, nullptr);
 	}
 
@@ -336,22 +335,28 @@ namespace cgb
 	void generic_glfw::glfw_mouse_button_callback(GLFWwindow* window, int button, int action, int mods)
 	{
 		assert(are_we_on_the_main_thread());
-		std::scoped_lock<std::mutex> guard(sInputMutex);
+		std::scoped_lock<std::mutex> guard(composition_interface::current()->input_mutex());
 		button = glm::clamp(button, 0, 7);
 
-		auto& inputBackBuffer = composition_interface::current()->background_input_buffer();
+		auto& backBufferVarying = composition_interface::current()->background_input_buffer_varying();
+		auto& backBufferFixed = composition_interface::current()->background_input_buffer_fixed();
 		switch (action)
 		{
 		case GLFW_PRESS:
-			inputBackBuffer.mMouseKeys[button] |= key_state::pressed;
-			inputBackBuffer.mMouseKeys[button] |= key_state::down;
+			backBufferVarying.mMouseKeys[button] |= key_state::pressed;
+			backBufferVarying.mMouseKeys[button] |= key_state::down;
+			backBufferFixed.mMouseKeys[button]   |= key_state::pressed;
+			backBufferFixed.mMouseKeys[button]   |= key_state::down;
 			break;
 		case GLFW_RELEASE:
-			inputBackBuffer.mMouseKeys[button] |= key_state::released;
-			inputBackBuffer.mMouseKeys[button] &= ~key_state::down;
+			backBufferVarying.mMouseKeys[button] |= key_state::released;
+			backBufferVarying.mMouseKeys[button] &= ~key_state::down;
+			backBufferFixed.mMouseKeys[button]   |= key_state::released;
+			backBufferFixed.mMouseKeys[button]   &= ~key_state::down;
 			break;
 		case GLFW_REPEAT:
-			inputBackBuffer.mMouseKeys[button] |= key_state::down;
+			backBufferVarying.mMouseKeys[button] |= key_state::down;
+			backBufferFixed.mMouseKeys[button]   |= key_state::down;
 			break;
 		}
 	}
@@ -366,6 +371,7 @@ namespace cgb
 
 	void generic_glfw::glfw_scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
 	{
+		// TODO: Implement!
 		//assert(sTargetInputBuffer);
 		//std::scoped_lock<std::mutex> guard(sInputMutex);
 		//sTargetInputBuffer->mScrollPosition += glm::dvec2(xoffset, yoffset);
@@ -373,22 +379,27 @@ namespace cgb
 
 	void generic_glfw::glfw_key_callback(GLFWwindow* window, int key, int scancode, int action, int mods)
 	{
-		std::scoped_lock<std::mutex> guard(sInputMutex);
+		std::scoped_lock<std::mutex> guard(composition_interface::current()->input_mutex());
 
 		// TODO: Do something with the window-parameter? Or is it okay?
 
 		key = glm::clamp(key, 0, GLFW_KEY_LAST);
 
-		auto& inputBackBuffer = composition_interface::current()->background_input_buffer();
+		auto& backBufferVarying = composition_interface::current()->background_input_buffer_varying();
+		auto& backBufferFixed = composition_interface::current()->background_input_buffer_fixed();
 		switch (action)
 		{
 		case GLFW_PRESS:
-			inputBackBuffer.mKeyboardKeys[static_cast<size_t>(sGlfwToKeyMapping[key])] |= key_state::pressed;
-			inputBackBuffer.mKeyboardKeys[static_cast<size_t>(sGlfwToKeyMapping[key])] |= key_state::down;
+			backBufferVarying.mKeyboardKeys[static_cast<size_t>(sGlfwToKeyMapping[key])] |= key_state::pressed;
+			backBufferVarying.mKeyboardKeys[static_cast<size_t>(sGlfwToKeyMapping[key])] |= key_state::down;
+			backBufferFixed.mKeyboardKeys[static_cast<size_t>(sGlfwToKeyMapping[key])]   |= key_state::pressed;
+			backBufferFixed.mKeyboardKeys[static_cast<size_t>(sGlfwToKeyMapping[key])]   |= key_state::down;
 			break;
 		case GLFW_RELEASE:
-			inputBackBuffer.mKeyboardKeys[static_cast<size_t>(sGlfwToKeyMapping[key])] |= key_state::released;
-			inputBackBuffer.mKeyboardKeys[static_cast<size_t>(sGlfwToKeyMapping[key])] &= ~key_state::down;
+			backBufferVarying.mKeyboardKeys[static_cast<size_t>(sGlfwToKeyMapping[key])] |= key_state::released;
+			backBufferVarying.mKeyboardKeys[static_cast<size_t>(sGlfwToKeyMapping[key])] &= ~key_state::down;
+			backBufferFixed.mKeyboardKeys[static_cast<size_t>(sGlfwToKeyMapping[key])]   |= key_state::released;
+			backBufferFixed.mKeyboardKeys[static_cast<size_t>(sGlfwToKeyMapping[key])]   &= ~key_state::down;
 			break;
 		case GLFW_REPEAT:
 			// just ignore
@@ -480,5 +491,16 @@ namespace cgb
 			auto numAfter = mEventHandlers.size();
 			numHandled = numAfter - numBefore;
 		} while (numHandled > 0);
+	}
+
+	void generic_glfw::update_cursor_positions_in_input_buffers(window* pWindow)
+	{
+		assert(are_we_on_the_main_thread());
+		pWindow->update_cursor_position();
+		auto& backBufferVarying = composition_interface::current()->background_input_buffer_varying();
+		auto& backBufferFixed = composition_interface::current()->background_input_buffer_fixed();
+		backBufferVarying.mWindow = pWindow;
+		backBufferVarying.mCursorDisabled = pWindow->is_cursor_disabled();
+		backBufferVarying.mCursorPosition = pWindow->cursor_position();
 	}
 }

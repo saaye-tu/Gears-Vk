@@ -9,28 +9,12 @@ namespace cgb
 		mDeltaCursorPosition = { 0.0, 0.0 };
 		mScrollDelta = { 0.0, 0.0 };
 		mCursorDisabled = false;
-		mCenterCursorPosition = std::nullopt;
 		mSetCursorPosition = std::nullopt;
 		mSetCursorDisabled = std::nullopt;
 	}
 
 	void input_buffer::prepare_for_next_frame(input_buffer& pFrontBufferToBe, input_buffer& pBackBufferToBe, window* pWindow)
 	{
-		pWindow->update_cursor_position();
-		// pFrontBufferToBe = previous back buffer
-		// pBackBufferToBe = previous front buffer
-
-		// Handle all the keyboard input
-		for (size_t i = 0; i < pFrontBufferToBe.mKeyboardKeys.size(); ++i) {
-			// Retain those down-states:
-			pBackBufferToBe.mKeyboardKeys[i] = (pFrontBufferToBe.mKeyboardKeys[i] & key_state::down);
-		}
-		// Handle all the mouse button input
-		for (size_t i = 0; i < pFrontBufferToBe.mMouseKeys.size(); ++i) {
-			// Retain those down-states:
-			pBackBufferToBe.mMouseKeys[i] = (pFrontBufferToBe.mMouseKeys[i] & key_state::down);
-		}
-
 		// Handle window changes (different window in focus) and other window-related actions
 		pFrontBufferToBe.mWindow = pWindow;
 		pFrontBufferToBe.mCursorDisabled = pFrontBufferToBe.mWindow->is_cursor_disabled();
@@ -42,34 +26,51 @@ namespace cgb
 			pFrontBufferToBe.mDeltaCursorPosition = { 0.0, 0.0 };
 		}
 
-		if (pBackBufferToBe.mCenterCursorPosition.has_value() || pBackBufferToBe.mSetCursorPosition.has_value()) {
-			assert(context().are_we_on_the_main_thread());
-			if (pBackBufferToBe.mCenterCursorPosition.has_value()) {
-				auto res = pWindow->resolution();
-				pWindow->set_cursor_pos({ res.x / 2.0, res.y / 2.0 });
-			}
-			else {
-				pWindow->set_cursor_pos({ pBackBufferToBe.mSetCursorPosition->x, pBackBufferToBe.mSetCursorPosition->y });
-			}
-			// Optimistic approach: Do not query GLFW for actual cursor position afterwards
+		if (pBackBufferToBe.mSetCursorPosition.has_value()) {
+			// Optimistic approach: Do not query GLFW for actual cursor position afterwards, just optimistically
+			//						assume that the requested cursor position will match the real cursor position
+			// TODO: The optimistic approach might be a problem.
 			// BUT (important!), set both buffers to the center coordinates (because of the delta position)!
-			pFrontBufferToBe.mCursorPosition = pBackBufferToBe.mCursorPosition = pWindow->cursor_position();
-			// Mark action as done:
-			pBackBufferToBe.mCenterCursorPosition = std::nullopt;
-			pBackBufferToBe.mSetCursorPosition = std::nullopt;
+			pFrontBufferToBe.mCursorPosition	= pBackBufferToBe.mSetCursorPosition.value();
+			pBackBufferToBe.mCursorPosition		= pBackBufferToBe.mSetCursorPosition.value();
 		}
 
-		if (pBackBufferToBe.mSetCursorDisabled.has_value()) {
+		{ // TODO: offload to a different thread.. but NOT the main thread! Deadlock danger! (generic_glfw might wait on a lock and never get it)
+			auto& pPreviousBackBuffer = pFrontBufferToBe;
+			auto& pCurrentBackBuffer = pBackBufferToBe;
+			// Handle all the keyboard input
+			for (size_t i = 0; i < pPreviousBackBuffer.mKeyboardKeys.size(); ++i) {
+				// Retain those down-states:
+				pCurrentBackBuffer.mKeyboardKeys[i] = (pPreviousBackBuffer.mKeyboardKeys[i] & key_state::down);
+			}
+			// Handle all the mouse button input
+			for (size_t i = 0; i < pPreviousBackBuffer.mMouseKeys.size(); ++i) {
+				// Retain those down-states:
+				pCurrentBackBuffer.mMouseKeys[i] = (pPreviousBackBuffer.mMouseKeys[i] & key_state::down);
+			}
+
+			// Scroll delta is always a relative amount and filled into the back-buffer by the GLFW context,
+			//  i.e. no need to alter it here, just reset it for the back-buffer.
+			pCurrentBackBuffer.mScrollDelta = { 0.0, 0.0 };
+		}
+	}
+
+	void input_buffer::work_off_back_buffer_actions(input_buffer& pCurrentBackBuffer, window* pWindow)
+	{
+		if (pCurrentBackBuffer.mSetCursorPosition.has_value()) {
 			assert(context().are_we_on_the_main_thread());
-			bool hidden = pBackBufferToBe.mSetCursorDisabled.value();
-			pWindow->disable_cursor(hidden);
+			pWindow->set_cursor_pos({ pCurrentBackBuffer.mSetCursorPosition->x, pCurrentBackBuffer.mSetCursorPosition->y });
 			// Mark action as done:
-			pBackBufferToBe.mSetCursorDisabled = std::nullopt;
+			pCurrentBackBuffer.mSetCursorPosition = std::nullopt;
 		}
 
-		// Scroll delta is always a relative amount and filled into the back-buffer by the GLFW context,
-		//  i.e. no need to alter it here, just reset it for the back-buffer.
-		pBackBufferToBe.mScrollDelta = { 0.0, 0.0 };
+		if (pCurrentBackBuffer.mSetCursorDisabled.has_value()) {
+			assert(context().are_we_on_the_main_thread());
+			const bool toBeDisabled = pCurrentBackBuffer.mSetCursorDisabled.value();
+			pWindow->disable_cursor(toBeDisabled);
+			// Mark action as done:
+			pCurrentBackBuffer.mSetCursorDisabled = std::nullopt;
+		}
 	}
 
 	bool input_buffer::key_pressed(key_code pKey)
@@ -125,11 +126,6 @@ namespace cgb
 	bool input_buffer::is_cursor_disabled() const
 	{
 		return mCursorDisabled;
-	}
-
-	void input_buffer::center_cursor_position()
-	{
-		mCenterCursorPosition = true;
 	}
 
 	void input_buffer::set_cursor_position(glm::dvec2 pNewPosition)

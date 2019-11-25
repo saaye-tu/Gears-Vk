@@ -50,9 +50,8 @@ namespace cgb
 		/** @brief starts receiving mouse and keyboard input from specified window.
 		 *
 		 *	@param[in] _Window The window to receive input from
-		 *	@param[ref] _InputBuffer The input buffer to be filled with user input
 		 */
-		void start_receiving_input_from_window(const window& _Window, input_buffer& _InputBuffer);
+		void start_receiving_input_from_window(const window& _Window);
 
 		/**	@brief stops receiving mouse and keyboard input from specified window.
 		 *
@@ -168,6 +167,11 @@ namespace cgb
 		// Posts an event so that the waiting on the other thread is ended and the other thread continues
 		inline void signal_waiting_main_thread() const { glfwPostEmptyEvent(); }
 
+		/* Updates the mouse cursor position in all the background input buffers
+		 * @param pWindow	The window to read the cursor position from
+		 */
+		void update_cursor_positions_in_input_buffers(window* pWindow);
+		
 	protected:
 		static void glfw_error_callback(int error, const char* description);
 		static void glfw_mouse_button_callback(GLFWwindow* window, int button, int action, int mods);
@@ -181,7 +185,6 @@ namespace cgb
 		static window* sWindowInFocus;
 		bool mInitialized;
 
-		static std::mutex sInputMutex;
 		static std::array<key_code, GLFW_KEY_LAST + 1> sGlfwToKeyMapping;
 
 		static std::thread::id sMainThreadId;

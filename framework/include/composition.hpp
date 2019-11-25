@@ -26,26 +26,32 @@ namespace cgb
 	{
 	public:
 		composition() :
-			mTimer(),
-			mExecutor(this),
-			mInputBuffers(),
-			mInputBufferForegroundIndex(0),
-			mInputBufferBackgroundIndex(1),
-			mShouldStop(false),
-			mInputBufferSwapPending(false),
-			mIsRunning(false)
+			mTimer{},
+			mExecutor{this},
+			mInputBuffers{},
+			mVaryingInputForegroundIndex{0},
+			mVaryingInputBackgroundIndex{1},
+			mFixedInputForegroundIndex	{2},
+			mFixedInputBackgroundIndex	{3},
+			mUserInputBufferIndex		{0},
+			mShouldStop{false},
+			mBackBufferActionsPending{false},
+			mIsRunning{false}
 		{
 		}
 
 		composition(std::initializer_list<cg_element*> pObjects) :
-			mTimer(),
-			mExecutor(this),
-			mInputBuffers(),
-			mInputBufferForegroundIndex(0),
-			mInputBufferBackgroundIndex(1),
-			mShouldStop(false),
-			mInputBufferSwapPending(false),
-			mIsRunning(false)
+			mTimer{},
+			mExecutor{this},
+			mInputBuffers{},
+			mVaryingInputForegroundIndex{0},
+			mVaryingInputBackgroundIndex{1},
+			mFixedInputForegroundIndex	{2},
+			mFixedInputBackgroundIndex	{3},
+			mUserInputBufferIndex		{0},
+			mShouldStop{false},
+			mBackBufferActionsPending{false},
+			mIsRunning{false}
 		{
 			for (auto* el : pObjects) {
 				auto it = std::lower_bound(std::begin(mElements), std::end(mElements), el, [](const cg_element* left, const cg_element* right) { return left->execution_order() < right->execution_order(); });
@@ -63,20 +69,40 @@ namespace cgb
 		 *	current user input data */
 		input_buffer& input() override
 		{
-			return mInputBuffers[mInputBufferForegroundIndex];
+			return mInputBuffers[mUserInputBufferIndex];
 		}
 
-		input_buffer& background_input_buffer() override
+		input_buffer& foreground_input_buffer_varying() override
 		{
-			return mInputBuffers[mInputBufferBackgroundIndex];
+			return mInputBuffers[mVaryingInputForegroundIndex];
+		}
+		
+		input_buffer& background_input_buffer_varying() override
+		{
+			return mInputBuffers[mVaryingInputBackgroundIndex];
+		}
+
+		input_buffer& foreground_input_buffer_fixed() override
+		{
+			return mInputBuffers[mFixedInputForegroundIndex];
+		}
+
+		input_buffer& background_input_buffer_fixed() override
+		{
+			return mInputBuffers[mFixedInputBackgroundIndex];
+		}
+
+		std::mutex& input_mutex() override
+		{
+			return sCompMutex;
 		}
 
 		/** Returns the @ref cg_element at the given index */
 		cg_element* element_at_index(size_t pIndex) override
 		{
-			if (pIndex < mElements.size())
+			if (pIndex < mElements.size()) {
 				return mElements[pIndex];
-
+			}
 			return nullptr;
 		}
 
@@ -146,44 +172,35 @@ namespace cgb
 			assert(mElementsToBeRemoved.size() == 0);
 		}
 
-		/** Signal the main thread to start swapping input buffers */
-		static void please_swap_input_buffers(composition* thiz)
+		/** Signal the main thread to start working off back buffer actions */
+		static void back_buffer_actions_good_to_go(composition* thiz)
 		{
-			{
-				std::scoped_lock<std::mutex> guard(sCompMutex);
-				assert(false == thiz->mInputBufferSwapPending);
-				thiz->mInputBufferSwapPending = true;
-			}
+			assert(false == thiz->mBackBufferActionsPending);
+			thiz->mBackBufferActionsPending = true;
 			context().signal_waiting_main_thread();
 		}
 
-		/** Wait on the rendering thread until the main thread has swapped the input buffers */
-		static void wait_for_input_buffers_swapped(composition* thiz)
+		/** Wait (on the rendering thread) until the main thread has worked off back buffer actions */
+		static void wait_for_back_buffer_actions_completed(composition* thiz)
 		{
 			using namespace std::chrono_literals;
 			
 			std::unique_lock<std::mutex> lk(sCompMutex);
-			if (thiz->mInputBufferSwapPending) {
+			if (thiz->mBackBufferActionsPending) {
 #if defined(_DEBUG)
 				auto totalWaitTime = 0ms;
 				auto timeout = 1ms;
 				int cnt = 0;
-				while (!sInputBufferCondVar.wait_for(lk, timeout, [thiz]{ return !thiz->mInputBufferSwapPending; })) {
+				while (!sInputBufferCondVar.wait_for(lk, timeout, [thiz]{ return !thiz->mBackBufferActionsPending; })) {
 					cnt++;
 					totalWaitTime += timeout;
 					LOG_DEBUG(fmt::format("Condition variable waits for timed out. Total wait time in current frame is {}", totalWaitTime));	
 				}
 #else
-				sInputBufferCondVar.wait(lk, [thiz]{ return !thiz->mInputBufferSwapPending; });
+				sInputBufferCondVar.wait(lk, [thiz]{ return !thiz->mBackBufferActionsPending; });
 #endif
 			}
-			assert(thiz->mInputBufferSwapPending == false);
-//#if _DEBUG
-//				if ((i+1) % 10000 == 0)
-//				{
-//					LOG_DEBUG(fmt::format("Warning: more than {} iterations in spin-lock", i+1));
-//				}
-//#endif
+			assert(thiz->mBackBufferActionsPending == false);
 		}
 
 		/** Rendering thread's main function */
@@ -194,27 +211,74 @@ namespace cgb
 
 			while (!thiz->mShouldStop)
 			{
-				thiz->add_pending_elements();
-
-				// signal context
-				context().begin_frame();
 				context().signal_waiting_main_thread(); // Let the main thread do some work in the meantime
 
-				frameType = thiz->mTimer.tick();
+				// Signal context
+				context().begin_frame();
 
-				wait_for_input_buffers_swapped(thiz);
+				// Add pending elements
+				thiz->add_pending_elements();
 
 				// 2. check and possibly issue on_enable event handlers
 				thiz->mExecutor.execute_handle_enablings(thiz->mElements);
 
-				// 3. fixed_update
-				if ((frameType & timer_frame_type::fixed) == timer_frame_type::fixed)
+				// Prepare for input handling and TICK
+				auto* windowForCursorActions = context().window_in_focus();
+				frameType = thiz->mTimer.tick();
+
+				wait_for_back_buffer_actions_completed(thiz);
+
+				if (timer_frame_type::fixed == frameType) // ATTENTION: Only true if the frameType is fixed ONLY!
 				{
+					// We need the fixed input immediately
+					{
+						std::scoped_lock<std::mutex> guard(thiz->input_mutex());
+						input_buffer::prepare_for_next_frame(
+							thiz->background_input_buffer_fixed(),
+							thiz->foreground_input_buffer_fixed(),
+							windowForCursorActions
+						);
+						std::swap(
+							thiz->mFixedInputBackgroundIndex, 
+							thiz->mFixedInputForegroundIndex
+						);
+					}
+
+					thiz->mUserInputBufferIndex = thiz->mFixedInputForegroundIndex;
+					
+					// 3. fixed update
 					thiz->mExecutor.execute_fixed_updates(thiz->mElements);
+
+					// signal context
+					context().update_stage_done();
+					context().signal_waiting_main_thread(); // Let the main thread work concurrently
+
+					back_buffer_actions_good_to_go(thiz);
 				}
 
 				if ((frameType & timer_frame_type::varying) == timer_frame_type::varying)
 				{
+					// We need the varying input immediately
+					{
+						std::scoped_lock<std::mutex> guard(thiz->input_mutex());
+						input_buffer::prepare_for_next_frame(
+							thiz->background_input_buffer_varying(),
+							thiz->foreground_input_buffer_varying(),
+							windowForCursorActions
+						);
+						std::swap(
+							thiz->mVaryingInputBackgroundIndex, 
+							thiz->mVaryingInputForegroundIndex
+						);
+					}
+					
+					thiz->mUserInputBufferIndex = thiz->mVaryingInputForegroundIndex;
+
+					// 3. fixed update
+					if ((frameType & timer_frame_type::fixed) == timer_frame_type::fixed) {						
+						thiz->mExecutor.execute_fixed_updates(thiz->mElements);
+					}
+					
 					// 4. update
 					thiz->mExecutor.execute_updates(thiz->mElements);
 
@@ -223,7 +287,7 @@ namespace cgb
 					context().signal_waiting_main_thread(); // Let the main thread work concurrently
 
 					// Tell the main thread that we'd like to have the new input buffers from A) here:
-					please_swap_input_buffers(thiz);
+					back_buffer_actions_good_to_go(thiz);
 
 					// 5. render
 					thiz->mExecutor.execute_renders(thiz->mElements);
@@ -283,25 +347,16 @@ namespace cgb
 						e->mPresentImages.clear();
 					}
 				}
-				else
-				{
-					// signal context
-					context().update_stage_done();
-					context().signal_waiting_main_thread(); // Let the main thread work concurrently
-
-					// If not performed from inside the positive if-branch, tell the main thread of our 
-					// input buffer update desire here:
-					please_swap_input_buffers(thiz);
-				}
+				
+				context().signal_waiting_main_thread(); // Let the main thread work concurrently
 
 				// 8. check and possibly issue on_disable event handlers
 				thiz->mExecutor.execute_handle_disablings(thiz->mElements);
 
+				thiz->remove_pending_elements();
+				
 				// signal context
 				context().end_frame();
-				context().signal_waiting_main_thread(); // Let the main thread work concurrently
-
-				thiz->remove_pending_elements();
 			}
 
 		}
@@ -374,7 +429,7 @@ namespace cgb
 				w->set_is_in_use(true);
 				// Write into the buffer at mInputBufferUpdateIndex,
 				// let client-objects read from the buffer at mInputBufferConsumerIndex
-				context().start_receiving_input_from_window(*w, mInputBuffers[mInputBufferForegroundIndex]);
+				context().start_receiving_input_from_window(*w);
 				mWindowsReceivingInputFrom.push_back(w);
 			}
 
@@ -390,19 +445,14 @@ namespace cgb
 				context().work_off_event_handlers();
 
 				std::unique_lock<std::mutex> lk(sCompMutex);
-				if (mInputBufferSwapPending) {
-					auto* windowForCursorActions = context().window_in_focus();
-					// The buffer which has been updated becomes the buffer which will be consumed in the next frame
-					//  update-buffer = previous frame, i.e. done
-					//  consumer-index = updated in the next frame, i.e. to be done
-					input_buffer::prepare_for_next_frame(
-						mInputBuffers[mInputBufferBackgroundIndex], 
-						mInputBuffers[mInputBufferForegroundIndex], 
-						windowForCursorActions);
-					std::swap(mInputBufferForegroundIndex, mInputBufferBackgroundIndex);
+				auto* windowForCursorActions = context().window_in_focus();
+				if (mBackBufferActionsPending) {
+
+					input_buffer::work_off_back_buffer_actions(background_input_buffer_varying(),	windowForCursorActions);
+					input_buffer::work_off_back_buffer_actions(background_input_buffer_fixed(),		windowForCursorActions);
 
 					// reset flag:
-					mInputBufferSwapPending = false;
+					mBackBufferActionsPending = false;
 
 					// resume render_thread:
 					lk.unlock();
@@ -452,7 +502,7 @@ namespace cgb
 	private:
 		static std::mutex sCompMutex;
 		std::atomic_bool mShouldStop;
-		bool mInputBufferSwapPending;
+		bool mBackBufferActionsPending;
 		static std::condition_variable sInputBufferCondVar;
 
 		bool mIsRunning;
@@ -463,9 +513,12 @@ namespace cgb
 		std::vector<cg_element*> mElementsToBeRemoved;
 		TTimer mTimer;
 		TExecutor mExecutor;
-		std::array<input_buffer, 2> mInputBuffers;
-		int32_t mInputBufferForegroundIndex;
-		int32_t mInputBufferBackgroundIndex;
+		std::array<input_buffer, 4> mInputBuffers;
+		int32_t mVaryingInputForegroundIndex;
+		int32_t mVaryingInputBackgroundIndex;
+		int32_t mFixedInputForegroundIndex;
+		int32_t mFixedInputBackgroundIndex;
+		std::atomic_int_fast32_t mUserInputBufferIndex;
 	};
 
 	template <typename TTimer, typename TExecutor>
