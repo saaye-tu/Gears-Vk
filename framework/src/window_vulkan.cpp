@@ -312,13 +312,28 @@ namespace cgb
 
 	}*/
 
+	void window::begin_frame()
+	{
+		//if (current_frame() > 0) {
+		//	auto ifi = in_flight_index_for_frame(current_frame() - 1);
+		//	const auto& fence = fence_for_frame(current_frame() - 1);
+		//	cgb::context().logical_device().waitForFences(1u, fence.handle_addr(), VK_TRUE, std::numeric_limits<uint64_t>::max());
+		//}
+		{
+			auto ifi = in_flight_index_for_frame({});
+			const auto& fence = fence_for_frame();
+			cgb::context().logical_device().waitForFences(1u, fence.handle_addr(), VK_TRUE, std::numeric_limits<uint64_t>::max());
+		}
+	}
+
 	void window::render_frame(std::vector<std::reference_wrapper<const cgb::command_buffer>> _CommandBufferRefs, std::optional<std::reference_wrapper<const cgb::image_t>> _CopyToPresent)
 	{
 		vk::Result result;
 
 		// Wait for the fence before proceeding, GPU -> CPU synchronization via fence
+		auto ifi = in_flight_index_for_frame({});
 		const auto& fence = fence_for_frame();
-		cgb::context().logical_device().waitForFences(1u, fence.handle_addr(), VK_TRUE, std::numeric_limits<uint64_t>::max());
+		//cgb::context().logical_device().waitForFences(1u, fence.handle_addr(), VK_TRUE, std::numeric_limits<uint64_t>::max());
 		result = cgb::context().logical_device().resetFences(1u, fence.handle_addr());
 		assert (vk::Result::eSuccess == result);
 

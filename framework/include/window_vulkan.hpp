@@ -194,6 +194,8 @@ namespace cgb
 
 		//std::vector<semaphore> set_num_extra_semaphores_to_generate_per_frame(uint32_t _NumExtraSemaphores);
 
+		void begin_frame();
+		
 		//template<typename CBT, typename... CBTS>
 		//void render_frame(CBT _CommandBuffer, CBTS... _CommandBuffers)
 		void render_frame(std::vector<std::reference_wrapper<const cgb::command_buffer>> _CommandBufferRefs, std::optional<std::reference_wrapper<const cgb::image_t>> _CopyToPresent = {});

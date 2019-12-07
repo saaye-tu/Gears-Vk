@@ -280,6 +280,7 @@ namespace cgb
 					}
 					
 					// 4. update
+					windowForCursorActions->begin_frame(); // TODO: Do this for all windows? Or for those which were rendered into in the last frame?
 					thiz->mExecutor.execute_updates(thiz->mElements);
 
 					// signal context
