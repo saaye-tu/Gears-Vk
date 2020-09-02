@@ -6,19 +6,40 @@ namespace gvk
 	using model_index_t = size_t;
 	using mesh_index_t = size_t;
 
+	struct animation_clip_data
+	{
+		unsigned int mAnimationIndex;
+		double mTicksPerSecond;
+		double mStartTicks;
+		double mEndTicks;
+	};
+
+	struct animated_meshes
+	{
+		/** Collection of tuples with two elements:
+		 *  [0]: The mesh index to be animated
+		 *  [1]: Pointer to the target storage where bone matrices shall be written to
+		 */
+		std::vector<std::tuple<mesh_index_t, glm::mat4*>> mMeshIndicesAndTargetStorage;
+
+		/** Maximum number of bone matrices to write into the target storage pointers.
+		 *  (Second tuple element of mMeshIndicesAndTargetStorage)
+		 */
+		size_t mMaxNumBoneMatrices;
+
+		// TMP:
+		// Maps bone name with index
+		std::vector<glm::mat4> m_boneFinalTransform;
+		std::map<aiNode *, aiNodeAnim *> m_nodeToNodeAnimMap;
+		std::map<std::string, uint32_t> m_boneNameIdMap;
+		std::vector<glm::mat4> m_boneOffsetMatrix;
+	};
+	
 	class model_t
 	{
 		friend class context_vulkan;
 		
 	public:
-		struct animation_clip_data
-		{
-			unsigned int mAnimationIndex;
-			double mTicksPerSecond;
-			double mStartTicks;
-			double mEndTicks;
-		};
-		
 		using aiProcessFlagsType = unsigned int;
 
 		model_t() = default;
@@ -218,6 +239,9 @@ namespace gvk
 			return result;
 		}
 
+		/** Returns the number of meshes. */
+		mesh_index_t num_meshes() const { return mScene->mNumMeshes; }
+		
 		/** Return the indices of all meshes which the given predicate evaluates true for.
 		 *	Function-signature: bool(size_t, const aiMesh*) where the first parameter is the 
 		 *									mesh index and the second the pointer to the data
@@ -249,21 +273,21 @@ namespace gvk
 		std::vector<glm::uvec4> bone_indices_for_meshes(std::vector<mesh_index_t> aMeshIndices) const;
 
 		template <typename T>
-		std::vector<T> texture_coordinates_for_meshes(std::vector<mesh_index_t> _MeshIndices, int _Set = 0) const
+		std::vector<T> texture_coordinates_for_meshes(std::vector<mesh_index_t> aMeshIndices, int aSet = 0) const
 		{
 			std::vector<T> result;
-			for (auto meshIndex : _MeshIndices) {
-				auto tmp = texture_coordinates_for_mesh<T>(meshIndex, _Set);
+			for (auto meshIndex : aMeshIndices) {
+				auto tmp = texture_coordinates_for_mesh<T>(meshIndex, aSet);
 				std::move(std::begin(tmp), std::end(tmp), std::back_inserter(result));
 			}
 			return result;
 		}
 
 		template <typename T>
-		std::vector<T> indices_for_meshes(std::vector<mesh_index_t> _MeshIndices) const
+		std::vector<T> indices_for_meshes(std::vector<mesh_index_t> aMeshIndices) const
 		{
 			std::vector<T> result;
-			for (auto meshIndex : _MeshIndices) {
+			for (auto meshIndex : aMeshIndices) {
 				auto tmp = indices_for_mesh<T>(meshIndex);
 				std::move(std::begin(tmp), std::end(tmp), std::back_inserter(result));
 			}
@@ -278,6 +302,240 @@ namespace gvk
 
 		/** Load an animation clip's data */
 		animation_clip_data load_animation_clip(unsigned int aAnimationIndex, double aStartTimeTicks, double aEndTimeTicks) const;
+
+
+
+static glm::mat4 aiMat4_to_glmMat4(const aiMatrix4x4 &ai) {
+	glm::mat4 g;
+	g[0][0] = ai[0][0]; g[0][1] = ai[1][0]; g[0][2] = ai[2][0]; g[0][3] = ai[3][0];
+	g[1][0] = ai[0][1]; g[1][1] = ai[1][1]; g[1][2] = ai[2][1]; g[1][3] = ai[3][1];
+	g[2][0] = ai[0][2]; g[2][1] = ai[1][2]; g[2][2] = ai[2][2]; g[2][3] = ai[3][2];
+	g[3][0] = ai[0][3]; g[3][1] = ai[1][3]; g[3][2] = ai[2][3]; g[3][3] = ai[3][3];
+	return g;
+}
+
+static glm::vec3 aiVec3_to_glmVec3(const aiVector3D &ai) {
+	return glm::vec3(ai.x, ai.y, ai.z);
+}
+
+template<typename T>
+static double getInterpolationFrames(T *keys, size_t numKeys, double ticks, double duration, size_t &priorFrame, size_t &nextFrame) {
+	// find next key frame (after current time)
+	assert(numKeys > 0);
+	for (size_t i = 1; i < numKeys; i++) {
+		if (ticks <= keys[i].mTime) {
+			priorFrame = i - 1;
+			nextFrame  = i;
+			return (ticks - keys[priorFrame].mTime) / (keys[nextFrame].mTime - keys[priorFrame].mTime);
+		}
+	}
+	// interpolate between last and first frame ... does that ever happen?
+	priorFrame = numKeys - 1;
+	nextFrame  = 0;
+	return (ticks - keys[priorFrame].mTime) / (keys[nextFrame].mTime + duration - keys[priorFrame].mTime);
+}
+
+void interpolateScaling(aiNodeAnim * nodeAnim, glm::mat4 & result, const animation_clip_data& aAnimationClip, double ticks, double duration) {
+	aiVector3D scale;
+	if (nodeAnim->mNumScalingKeys == 1) {
+		scale = nodeAnim->mScalingKeys[0].mValue;
+	} else {
+		size_t prior, next;
+		float factor = (float)getInterpolationFrames(nodeAnim->mScalingKeys, nodeAnim->mNumScalingKeys, ticks, duration, prior, next);
+		aiVector3D &a = nodeAnim->mScalingKeys[prior].mValue;
+		aiVector3D &b = nodeAnim->mScalingKeys[next] .mValue;
+		scale = a + factor * (b - a);
+	}
+	result = glm::scale(glm::mat4(1.f), aiVec3_to_glmVec3(scale));
+}
+
+void interpolateTranslation(aiNodeAnim * nodeAnim, glm::mat4 & result, const animation_clip_data& aAnimationClip, double ticks, double duration) {
+	aiVector3D trans;
+	if (nodeAnim->mNumPositionKeys == 1) {
+		trans = nodeAnim->mPositionKeys[0].mValue;
+	} else {
+		size_t prior, next;
+		float factor = (float)getInterpolationFrames(nodeAnim->mPositionKeys, nodeAnim->mNumPositionKeys, ticks, duration, prior, next);
+		aiVector3D &a = nodeAnim->mPositionKeys[prior].mValue;
+		aiVector3D &b = nodeAnim->mPositionKeys[next] .mValue;
+		trans = a + factor * (b - a);
+	}
+	result = glm::translate(glm::mat4(1.f), aiVec3_to_glmVec3(trans));
+}
+
+void interpolateRotation(aiNodeAnim * nodeAnim, glm::mat4 & result, const animation_clip_data& aAnimationClip, double ticks, double duration) {
+	aiQuaternion q;
+	if (nodeAnim->mNumRotationKeys == 1) {
+		q = nodeAnim->mRotationKeys[0].mValue;
+	} else {
+		size_t prior, next;
+		float factor = (float)getInterpolationFrames(nodeAnim->mRotationKeys, nodeAnim->mNumRotationKeys, ticks, duration, prior, next);
+		aiQuaternion &a = nodeAnim->mRotationKeys[prior].mValue;
+		aiQuaternion &b = nodeAnim->mRotationKeys[next] .mValue;
+		aiQuaternion::Interpolate(q, a, b, factor);
+		q = q.Normalize();
+	}
+	result = aiMat4_to_glmMat4(aiMatrix4x4(q.GetMatrix()));
+}
+
+
+	// Find animation for a given node
+	const aiNodeAnim* findNodeAnim(const aiAnimation* animation, const std::string nodeName)
+	{
+		for (uint32_t i = 0; i < animation->mNumChannels; i++)
+		{
+			const aiNodeAnim* nodeAnim = animation->mChannels[i];
+			if (std::string(nodeAnim->mNodeName.data) == nodeName)
+			{
+				return nodeAnim;
+			}
+		}
+		return nullptr;
+	}
+
+	// Load bone information from ASSIMP mesh
+	std::optional<uint32_t> getBoneIndex(const aiMesh* pMesh, std::string aName)
+	{
+		for (uint32_t i = 0; i < pMesh->mNumBones; i++) {
+			if (std::string(pMesh->mBones[i]->mName.data) == aName) {
+				return i;
+			}
+		}
+		return {};
+	}
+		
+	// Get node hierarchy for current animation time
+	void readNodeHierarchy(glm::mat4* aBoneMatricesStorage, mesh_index_t aMeshIndex, const animation_clip_data& aAnimationClip, float aAnimationTime, aiNode* node, const glm::mat4& parentTransform, animated_meshes& aMeshesToAnimate)
+	{
+		for (auto& meshAni : aMeshesToAnimate.mMeshIndicesAndTargetStorage) {
+			auto meshIndex = std::get<mesh_index_t>(meshAni);
+			auto storagePtr = std::get<glm::mat4*>(meshAni);
+
+			
+			// find the nodeAnim for the current node
+			auto animIter = aMeshesToAnimate.m_nodeToNodeAnimMap.find(node);
+			aiNodeAnim *nodeAnim = animIter != aMeshesToAnimate.m_nodeToNodeAnimMap.end() ? animIter->second : nullptr;
+
+			glm::mat4 nodeTransform = aiMat4_to_glmMat4(node->mTransformation);
+			if (nodeAnim) {
+				// interpolate
+				glm::mat4 scaling,rotation,translation;
+				interpolateScaling(nodeAnim, scaling, aAnimationClip, aAnimationTime, aAnimationClip.mEndTicks - aAnimationClip.mStartTicks);
+				interpolateRotation(nodeAnim, rotation, aAnimationClip, aAnimationTime, aAnimationClip.mEndTicks - aAnimationClip.mStartTicks);
+				interpolateTranslation(nodeAnim, translation, aAnimationClip, aAnimationTime, aAnimationClip.mEndTicks - aAnimationClip.mStartTicks);
+				nodeTransform = translation * rotation * scaling;
+			}
+
+
+			glm::mat4 globalTransform = parentTransform * nodeTransform;
+
+			// update the final transform for this bone (if it is a bone)
+			std::string	nodeName(node->mName.C_Str());
+			auto boneIter = aMeshesToAnimate.m_boneNameIdMap.find(nodeName);
+			if (boneIter != aMeshesToAnimate.m_boneNameIdMap.end()) {
+				uint32_t boneId = boneIter->second;
+				auto m_globalInverseTransform = glm::inverse(aiMat4_to_glmMat4(mScene->mRootNode->mTransformation));
+				aMeshesToAnimate.m_boneFinalTransform[boneId] = m_globalInverseTransform * globalTransform * aMeshesToAnimate.m_boneOffsetMatrix[boneId];
+			}
+
+			// process children
+			for (size_t i = 0; i < node->mNumChildren; i++)
+				readNodeHierarchy(aBoneMatricesStorage, aMeshIndex, aAnimationClip, aAnimationTime, node->mChildren[i], globalTransform, aMeshesToAnimate);
+		
+			//auto& target = aBoneMatricesStorage[boneIndex.value()];
+			//target[0][0] = finalTransform.a1;
+			//target[0][1] = finalTransform.b1;
+			//target[0][2] = finalTransform.c1;
+			//target[0][3] = finalTransform.d1;
+			//target[1][0] = finalTransform.a2;
+			//target[1][1] = finalTransform.b2;
+			//target[1][2] = finalTransform.c2;
+			//target[1][3] = finalTransform.d2;
+			//target[2][0] = finalTransform.a3;
+			//target[2][1] = finalTransform.b3;
+			//target[2][2] = finalTransform.c3;
+			//target[2][3] = finalTransform.d3;
+			//target[3][0] = finalTransform.a4;
+			//target[3][1] = finalTransform.b4;
+			//target[3][2] = finalTransform.c4;
+			//target[3][3] = finalTransform.d4;
+		}
+	}
+
+void initNodeAnimMap(std::map<aiNode *, aiNodeAnim *>& m_nodeToNodeAnimMap, aiAnimation *m_animation, aiNode * node) {
+	if (m_nodeToNodeAnimMap.find(node) == m_nodeToNodeAnimMap.end()) {
+		for (size_t i = 0; i < m_animation->mNumChannels; i++) {
+			if (m_animation->mChannels[i]->mNodeName == node->mName) {
+				m_nodeToNodeAnimMap[node] = m_animation->mChannels[i];
+				break;
+			}
+		}
+	}
+	for (size_t i = 0; i < node->mNumChildren; i++)
+		initNodeAnimMap(m_nodeToNodeAnimMap, m_animation, node->mChildren[i]);
+}
+		
+		animated_meshes declare_to_animate_all_meshes_into_strided_consecutive_storage(glm::mat4* aBeginningOfTargetStorage, size_t aStride, std::optional<size_t> aMaxNumBoneMatrices = {})
+		{
+			if (!aMaxNumBoneMatrices.has_value()) {
+				aMaxNumBoneMatrices = aStride;
+			}
+		
+			auto numMeshes = num_meshes();
+			animated_meshes result;
+			for (decltype(numMeshes) i = 0; i < numMeshes; ++i) {
+				result.mMeshIndicesAndTargetStorage.emplace_back(i, aBeginningOfTargetStorage + i * aStride);
+			}
+			result.mMaxNumBoneMatrices = aMaxNumBoneMatrices.value();
+
+	
+			result.m_boneFinalTransform.resize(aMaxNumBoneMatrices.value());
+			initNodeAnimMap(result.m_nodeToNodeAnimMap, mScene->mAnimations[0], mScene->mRootNode);
+
+
+			result.m_boneNameIdMap.clear();
+			result.m_boneOffsetMatrix.clear();
+			for (size_t iMesh = 0; iMesh < mScene->mNumMeshes; iMesh++) {
+				aiMesh *aimesh = mScene->mMeshes[iMesh];
+				for (size_t iBone = 0; iBone < aimesh->mNumBones; iBone++) {
+					aiBone *aibone = aimesh->mBones[iBone];
+					std::string name(aibone->mName.C_Str());
+					uint32_t boneId;
+					if (result.m_boneNameIdMap.find(name) == result.m_boneNameIdMap.end()) {
+						// new bone, add it
+						boneId = (uint32_t)result.m_boneOffsetMatrix.size();
+						result.m_boneNameIdMap[name] = boneId;
+						result.m_boneOffsetMatrix.push_back(aiMat4_to_glmMat4(aibone->mOffsetMatrix));
+					} else {
+						// already there
+						boneId = result.m_boneNameIdMap[name];
+	//#if _DEBUG
+	//					if (m_boneOffsetMatrix[boneId] != aiMat4_to_glmMat4(aibone->mOffsetMatrix))
+	//						FATAL_ERROR("Bone offset matrix mismatch on bone " << name << " in mesh " << iMesh);
+	//#endif
+					}
+
+				}
+			}
+
+		
+			return result;
+		}
+		
+		animated_meshes declare_to_animate_all_meshes_into_tightly_packed_consecutive_storage(glm::mat4* aBeginningOfTargetStorage, size_t aMaxNumBoneMatrices)
+		{
+			return declare_to_animate_all_meshes_into_strided_consecutive_storage(aBeginningOfTargetStorage, aMaxNumBoneMatrices, aMaxNumBoneMatrices);
+		}
+		
+		void update_bone_matrices(animated_meshes& aMeshesToAnimate, const animation_clip_data& aAnimationClip, double aTime)
+		{
+			for (auto& aniMesh : aMeshesToAnimate.mMeshIndicesAndTargetStorage) {
+				glm::mat4 identity(1.0f);
+				auto meshIndex = std::get<mesh_index_t>(aniMesh);
+				auto* targetStorage = std::get<glm::mat4*>(aniMesh);
+				readNodeHierarchy(targetStorage, meshIndex, aAnimationClip, aTime, mScene->mRootNode, identity, aMeshesToAnimate);
+			}
+		}
 
 	private:
 		void initialize_materials();
