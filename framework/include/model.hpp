@@ -470,6 +470,23 @@ static double getInterpolationFrames(T *keys, size_t numKeys, double ticks, doub
 		}
 		return {};
 	}
+
+	std::tuple<bool, aiMatrix4x4> findRootMeshNodeTransform(aiNode* meshRoot, mesh_index_t aMeshIndex)
+	{
+		auto result = std::make_tuple(true, meshRoot->mTransformation);
+		for (int i = 0; i < meshRoot->mNumMeshes; ++i) {
+			if (meshRoot->mMeshes[i] == aMeshIndex) {
+				return result;
+			}
+		}
+		for (int i = 0; i < meshRoot->mNumChildren; ++i) {
+			auto result = findRootMeshNodeTransform(meshRoot->mChildren[i], aMeshIndex);
+			if (std::get<bool>(result)) {
+				return std::make_tuple(true, meshRoot->mTransformation * std::get<aiMatrix4x4>(result));
+			}
+		}
+		return std::make_tuple(false, meshRoot->mTransformation); // wrong node, but better than nothing, I guess
+	}
 		
 	// Get node hierarchy for current animation time
 	void readNodeHierarchy(glm::mat4* aBoneMatricesStorage, mesh_index_t aMeshIndex, const animation_clip_data& aAnimationClip, float aAnimationTime, aiNode* node, const aiMatrix4x4& parentTransform, animated_meshes& aMeshesToAnimate)
@@ -496,7 +513,8 @@ static double getInterpolationFrames(T *keys, size_t numKeys, double ticks, doub
 		{
 			uint32_t boneIndex = aMeshesToAnimate.boneMapping[aMeshIndex][NodeName];
 
-			auto globalInverseTransform = mScene->mRootNode->mTransformation;
+			// Find the root node OF THE MESH, because "inverse pose matrices" a.k.a. "offset matrices" are relative to a mesh's root
+			auto globalInverseTransform = std::get<aiMatrix4x4>(findRootMeshNodeTransform(mScene->mRootNode, aMeshIndex));
 			globalInverseTransform.Inverse();
 			
 			auto finalTransform = globalInverseTransform * GlobalTransformation * aMeshesToAnimate.boneOffsets[aMeshIndex][boneIndex];
