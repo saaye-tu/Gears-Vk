@@ -153,16 +153,15 @@ public: // v== avk::invokee overrides which will be invoked by the framework ==v
 			avk::descriptor_binding(1, 0, mMaterialBuffer)
 		);
 
-#if _DEBUG
-		mPipeline.enable_shared_ownership(); // Make it usable with the updater
-		mUpdater.on(
+		mPipeline.enable_shared_ownership(); // Make it usable with the updater		
+		
+		//allocate an updater since we need one.
+		mUpdater.emplace();
+		mUpdater->on(
 				gvk::swapchain_resized_event(gvk::context().main_window()),
 				gvk::shader_files_changed_event(mPipeline)
 			)
 			.update(mPipeline);
-		
-		gvk::current_composition()->add_element(mUpdater);
-#endif
 
 		// Add the camera to the composition (and let it handle the updates)
 		mQuakeCam.set_translation({ 0.0f, 0.0f, 0.0f });
@@ -288,10 +287,6 @@ private: // v== Member variables ==v
 	gvk::quake_camera mQuakeCam;
 
 	glm::vec3 mScale;
-
-#if _DEBUG
-	gvk::updater mUpdater;
-#endif
 
 }; // model_loader_app
 

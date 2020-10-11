@@ -36,6 +36,7 @@ namespace gvk
 			for (auto& e : elements)
 			{
 				if (e->is_enabled()) {
+					e->run_recreation_updater();
 					e->update();
 				}
 			}

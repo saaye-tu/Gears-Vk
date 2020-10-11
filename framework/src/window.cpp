@@ -529,8 +529,8 @@ namespace gvk
 		context().dispatch_to_main_thread([&resolutionUpdated]() { resolutionUpdated = true; });
 		context().signal_waiting_main_thread();
 		mPresentQueue->handle().waitIdle();
-		while(!resolutionUpdated) { LOG_DEBUG("Waiting for main thread..."); }
-		
+		while (!resolutionUpdated) { LOG_DEBUG("Waiting for main thread..."); }
+
 		auto extent = context().get_resolution_for_window(this);
 		mImageCreateInfoSwapChain.setExtent(vk::Extent3D(extent.x, extent.y));
 		mSwapChainCreateInfo
@@ -554,7 +554,7 @@ namespace gvk
 			LOG_DEBUG(fmt::format("Swapchain image #{}: old handle=[{}], new handle=[{}]", i, fmt::ptr(static_cast<VkImage>(swap_chain_image_at_index(i).handle())), fmt::ptr(static_cast<VkImage>(swapChainImages[i]))));
 		}
 #endif
-		
+
 		// Create the new image views:
 		std::vector<avk::image_view> newImageViews(imagesInFlight);
 		for (size_t i = 0; i < imagesInFlight; ++i) {
@@ -563,37 +563,47 @@ namespace gvk
 			std::swap(ref, mSwapChainImageViews[i]);
 		}
 		std::swap(newSwapChain, mSwapChain);
-
-		// Create a new renderpass for the back buffers:
-		std::vector<avk::attachment> renderpassAttachments = { // TODO: Maybe outsource this into a separate method and re-use between here and original swap chain creation?
-			avk::attachment::declare_for(mSwapChainImageViews[0], avk::on_load::clear, avk::color(0), avk::on_store::store)
+		
+		std::vector<avk::framebuffer> newFramebuffers(imagesInFlight);				
+		auto imageResize = [&extent](avk::image_t& aPreparedImage) {
+			if (aPreparedImage.depth() == 1u) {
+				aPreparedImage.config().extent.width = extent.x;
+				aPreparedImage.config().extent.height = extent.y;
+			}
+			else {
+				LOG_WARNING(fmt::format("No idea how to update a 3D image with dimensions {}x{}x{}", aPreparedImage.width(), aPreparedImage.height(), aPreparedImage.depth()));
+			}
 		};
-		auto additionalAttachments = get_additional_back_buffer_attachments();
-		renderpassAttachments.insert(std::end(renderpassAttachments), std::begin(additionalAttachments), std::end(additionalAttachments));
-		auto newRenderpass = gvk::context().create_renderpass(renderpassAttachments);
-		newRenderpass.enable_shared_ownership();
-		std::swap(newRenderpass, mBackBufferRenderpass);
 
-		std::vector<avk::framebuffer> newFramebuffers(imagesInFlight);
+		// TODO: render pass does not need to be recreated as long as only image resolution changes [?] (for example sampleCount [?])
+		// => disabled for the time being		
+		if (bool sampleCountChanged = false; sampleCountChanged)
+		{
+			// Create a new renderpass for the back buffers:
+			std::vector<avk::attachment> renderpassAttachments = { // TODO: Maybe outsource this into a separate method and re-use between here and original swap chain creation?
+				avk::attachment::declare_for(mSwapChainImageViews[0], avk::on_load::clear, avk::color(0), avk::on_store::store)
+			};
+			auto additionalAttachments = get_additional_back_buffer_attachments();
+			renderpassAttachments.insert(std::end(renderpassAttachments), std::begin(additionalAttachments), std::end(additionalAttachments));
+			auto newRenderpass = gvk::context().create_renderpass(renderpassAttachments);
+			newRenderpass.enable_shared_ownership();
+			std::swap(newRenderpass, mBackBufferRenderpass);
+		}		
+
 		for (size_t i = 0; i < imagesInFlight; ++i) {
-			auto& imView = mSwapChainImageViews[i]; // TODO: This is all pretty much copy&pasted from context_vulkan.cpp #947ff. => Refactor and re-use code!
-			auto imExtent = imView->get_image().config().extent;
-
-			// Create one image view per attachment
+			auto& imView = mSwapChainImageViews[i];			
+			// Create one image view per previously existing image view. The first color attachment is always present.
+			const auto& backBufferImageViews = mBackBuffers[i]->image_views();
 			std::vector<avk::image_view> imageViews;
-			imageViews.reserve(renderpassAttachments.size());
+			imageViews.reserve(backBufferImageViews.size());
 			imageViews.push_back(imView); // The color attachment is added in any case
-			for (auto& aa : additionalAttachments) {
-				if (aa.is_used_as_depth_stencil_attachment()) {
-					auto depthView = gvk::context().create_depth_image_view(gvk::context().create_image(imExtent.width, imExtent.height, aa.format(), 1, avk::memory_usage::device, avk::image_usage::read_only_depth_stencil_attachment)); // TODO: read_only_* or better general_*?
-					imageViews.emplace_back(std::move(depthView));	     
-				}
-				else {
-					imageViews.emplace_back(gvk::context().create_image_view(gvk::context().create_image(imExtent.width, imExtent.height, aa.format(), 1, avk::memory_usage::device, avk::image_usage::general_color_attachment)));
-				}
+			for (int j = 1; j < backBufferImageViews.size(); j++) {
+				imView = backBufferImageViews[j];
+				auto imageView = gvk::context().create_image_view_from_template(imView, imageResize);
+				imageViews.emplace_back(std::move(imageView));				
 			}
 
-			auto& ref = newFramebuffers.emplace_back(gvk::context().create_framebuffer(mBackBufferRenderpass, std::move(imageViews), imExtent.width, imExtent.height));
+			auto& ref = newFramebuffers.emplace_back(gvk::context().create_framebuffer(mBackBufferRenderpass, std::move(imageViews), extent.x, extent.y));
 			ref.enable_shared_ownership();
 			std::swap(ref, mBackBuffers[i]);
 		}
@@ -607,8 +617,6 @@ namespace gvk
 			}
 		}
 
-		// TODO: There is so much copy&pasted => it needs some refactoring to re-use some of the code :-/
-		
-		return std::forward_as_tuple(std::move(newSwapChain), std::move(newImageViews), newRenderpass, newFramebuffers); // new == old by now
-	}	
+		return std::forward_as_tuple(std::move(newSwapChain), std::move(newImageViews), mBackBufferRenderpass, newFramebuffers); // new == old by now
+	}
 }

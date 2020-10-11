@@ -351,7 +351,7 @@ namespace gvk
 		/** Recreate the swap chain based on the current extent and return the old resources which
 		 *	will not be required anymore in #number_of_frames_in_flight() frames into the future.
 		 */
-		std::tuple<vk::UniqueSwapchainKHR, std::vector<avk::image_view>, avk::renderpass, std::vector<avk::framebuffer>> recreate_swap_chain();
+		std::tuple<vk::UniqueSwapchainKHR, std::vector<avk::image_view>, avk::renderpass, std::vector<avk::framebuffer>> recreate_swap_chain();		
 		
 	private:
 		// Helper method used in sync_before_render().

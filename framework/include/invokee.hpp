@@ -2,7 +2,7 @@
 #include <gvk.hpp>
 
 namespace gvk
-{
+{	
 	/**	@brief Override this base class for objects to update and/or render
 	 * 
 	 *	Base class for any object which should be updated or rendered
@@ -247,6 +247,8 @@ namespace gvk
 		/** @brief Returns whether rendering this element's gizmos is enabled or not. */
 		bool is_render_gizmos_enabled() const { return mRenderGizmosEnabled; }
 
+		void run_recreation_updater() { if (mUpdater.has_value()) mUpdater->apply_updates(); }
+
 	private:
 		inline static int32_t sGeneratedNameId = 0;
 		std::string mName;
@@ -254,5 +256,23 @@ namespace gvk
 		bool mEnabled;
 		bool mRenderEnabled;
 		bool mRenderGizmosEnabled;
+	protected:
+		std::optional<updater> mUpdater;
+	};
+}
+
+// hash generator (for unordered_map etc.)
+namespace std
+{
+	template<> struct hash<gvk::invokee>
+	{
+		std::size_t operator()(gvk::invokee const& key) const noexcept
+		{
+			std::size_t h = 0;
+			avk::hash_combine(h,
+				key.name()
+				);
+			return h;
+		}
 	};
 }

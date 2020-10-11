@@ -81,7 +81,7 @@ namespace gvk
 		mUpdateeToCleanUp = std::move(newImageView);
 	}
 	
-	void updater::render()
+	void updater::apply_updates()
 	{
 		// See if we have any resources to clean up:
 		if (!mUpdateesToCleanUp.empty()) {
@@ -131,5 +131,4 @@ namespace gvk
 	{
 		mUpdatees.emplace_back(aEventsBitset, std::move(aUpdatee), aTtl);
 	}
-
 }
